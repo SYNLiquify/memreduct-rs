@@ -40,6 +40,9 @@ const IDC_LOADONSTARTUP: i32 = 601;
 const IDC_STARTMINIMIZED: i32 = 602;
 const IDC_REDUCTCONFIRM: i32 = 603;
 const IDC_SKIPUAC: i32 = 604;
+const IDC_REQUIREADMIN: i32 = 605;
+const IDC_CHECKUPDATES: i32 = 606;
+const IDC_CHECKNOW: i32 = 607;
 // Memory
 const IDC_REGIONS: i32 = 610;
 const IDC_AUTOREDUCT_CHK: i32 = 611;
@@ -126,6 +129,10 @@ fn page_template(page: usize) -> Vec<u32> {
             t.checkbox(IDC_STARTMINIMIZED, "Start minimized", 6, 42, 240, 12);
             t.checkbox(IDC_REDUCTCONFIRM, "Confirm memory cleaning start", 6, 56, 240, 12);
             t.checkbox(IDC_SKIPUAC, "Skip \"User Account Control\" prompt warning", 6, 70, 240, 12);
+            t.checkbox(IDC_REQUIREADMIN, "Require administrator rights (ask at startup)", 6, 84, 240, 12);
+            heading(&mut t, 1, "Updates", 104);
+            t.checkbox(IDC_CHECKUPDATES, "Check for updates automatically (once a day)", 6, 117, 240, 12);
+            t.button(IDC_CHECKNOW, "Check for updates now", 6, 133, 110, 14);
         }
         PAGE_MEMORY => {
             heading(&mut t, 0, "Memory regions to be cleaned", 0);
@@ -523,6 +530,8 @@ fn load_page(page: usize, hwnd: HWND) {
             win::set_check(hwnd, IDC_STARTMINIMIZED, config::get_bool("IsStartMinimized", false));
             win::set_check(hwnd, IDC_REDUCTCONFIRM, config::get_bool("IsShowReductConfirmation", true));
             win::set_check(hwnd, IDC_SKIPUAC, config::get_bool("SkipUacEnabled", false));
+            win::set_check(hwnd, IDC_REQUIREADMIN, config::get_bool("RequireAdmin", true));
+            win::set_check(hwnd, IDC_CHECKUPDATES, config::get_bool("CheckUpdates", true));
         }
         PAGE_MEMORY => {
             let mask = config::get_u32("ReductMask2", MASK_DEFAULT);
@@ -649,6 +658,9 @@ fn on_page_command(page: HWND, id: i32, code: u32) {
         }
         IDC_STARTMINIMIZED => config::set_bool("IsStartMinimized", checked(id)),
         IDC_REDUCTCONFIRM => config::set_bool("IsShowReductConfirmation", checked(id)),
+        IDC_REQUIREADMIN => mainwnd::set_require_admin(page, checked(id)),
+        IDC_CHECKUPDATES => config::set_bool("CheckUpdates", checked(id)),
+        IDC_CHECKNOW => crate::update::check(mainwnd::main_hwnd(), false),
         IDC_SKIPUAC => {
             mainwnd::set_skipuac(page, checked(id));
             while_loading(|| win::set_check(page, id, config::get_bool("SkipUacEnabled", false)));

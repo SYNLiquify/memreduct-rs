@@ -26,6 +26,8 @@ Release numbers follow the upstream project: `v.3.5.2` of this rewrite correspon
 - **Tray icon styling**: font, colors, transparency, border, round corners, and warning/danger levels.
 - **Interface themes** (new in the rewrite): System default, Light, Dark, Midnight, Forest, Sunset, or Custom with your own colors for background, text, accent, accent text, lists/inputs and borders. Switch from *View → Theme* or *Settings → Theme*. The theme also covers the tray right-click menu and every other menu.
 - **Themed tray icon** (optional): *Settings → Tray icon style → Use interface theme colors* gives the percentage icon the theme's accent color, or your Windows accent color under "System default". Warning and danger colors still apply.
+- **Runs as administrator by default**: it asks for administrator rights at startup, because cleaning needs them. Turn off *Settings → General → Require administrator rights* to start without them; memory is then only monitored, and cleaning asks again when used.
+- **Built-in updater**: checks the GitHub releases once a day (or from *Help → Check for updates*). It verifies the download's SHA-256 against the release notes, replaces the program and restarts. Your settings are kept.
 - Load on startup, start minimized, always on top, and skipping the UAC prompt through a scheduled task.
 - Portable mode: put a `memreduct.ini` next to `memreduct.exe`.
 
@@ -55,7 +57,8 @@ Settings live in `%APPDATA%\memreduct-rs\memreduct.ini`. If a `memreduct.ini` ex
 - New interface theming (see above) and a recolored app icon.
 - Memory cleaning runs on a background thread, so the window stays responsive while standby lists are purged.
 - `-silent` option for scripted cleaning.
-- English only. No built-in updater: check the releases page for new versions.
+- English only.
+- The updater pulls from this repository's releases, not from the original project.
 
 ## Building
 

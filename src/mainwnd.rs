@@ -39,6 +39,8 @@ pub const IDM_WEBSITE: i32 = 208;
 pub const IDM_ABOUT: i32 = 209;
 pub const IDM_OPENCONFIG: i32 = 210;
 pub const IDM_CUSTOMIZE_COLORS: i32 = 211;
+pub const IDM_REQUIREADMIN: i32 = 212;
+pub const IDM_CHECKUPDATES: i32 = 213;
 pub const IDM_THEME_BASE: i32 = 220; // + preset index
 
 pub const IDM_TRAY_SHOW: i32 = 300;
@@ -55,6 +57,7 @@ const IDOK: i32 = 1;
 const IDCANCEL: i32 = 2;
 
 const NIN_KEYSELECT: u32 = WM_USER + 1;
+const NIN_BALLOONUSERCLICK: u32 = WM_USER + 5;
 
 pub const WM_TRAY: u32 = WM_APP + 1;
 pub const WM_CLEAN_DONE: u32 = WM_APP + 2;
@@ -348,12 +351,14 @@ pub fn build_menu(hwnd: HWND) {
         let settings_menu = CreatePopupMenu();
         append(settings_menu, MF_STRING, IDM_LOADONSTARTUP as usize, "Load on system startup");
         append(settings_menu, MF_STRING, IDM_STARTMINIMIZED as usize, "Start minimized");
+        append(settings_menu, MF_STRING, IDM_REQUIREADMIN as usize, "Require administrator rights");
         append(settings_menu, MF_STRING, IDM_SKIPUAC as usize, "Skip \"User Account Control\" prompt warning");
         separator(settings_menu);
         append(settings_menu, MF_STRING, IDM_OPENCONFIG as usize, "Open configuration folder");
 
         let help = CreatePopupMenu();
         append(help, MF_STRING, IDM_WEBSITE as usize, "Website");
+        append(help, MF_STRING, IDM_CHECKUPDATES as usize, "Check for updates");
         append(help, MF_STRING, IDM_ABOUT as usize, "&About\tF1");
 
         for (i, sub) in [file, view, settings_menu, help].into_iter().enumerate() {
@@ -384,6 +389,7 @@ pub fn update_menu_checks() {
     check(menu, IDM_REDUCTCONFIRM, config::get_bool("IsShowReductConfirmation", true));
     check(menu, IDM_LOADONSTARTUP, sys::autorun_is_enabled());
     check(menu, IDM_STARTMINIMIZED, config::get_bool("IsStartMinimized", false));
+    check(menu, IDM_REQUIREADMIN, config::get_bool("RequireAdmin", true));
     check(menu, IDM_SKIPUAC, config::get_bool("SkipUacEnabled", false));
     enable_menu(menu, IDM_SKIPUAC, sys::is_elevated());
     let current = theme::current_index();
@@ -467,6 +473,7 @@ fn show_tray_menu(hwnd: HWND) {
         append(menu, MF_STRING, IDM_SETTINGS as usize, "Settings...");
         separator(menu);
         append(menu, MF_STRING, IDM_WEBSITE as usize, "Website");
+        append(menu, MF_STRING, IDM_CHECKUPDATES as usize, "Check for updates");
         append(menu, MF_STRING, IDM_ABOUT as usize, "About");
         separator(menu);
         append(menu, MF_STRING, IDM_EXIT as usize, "Exit");
@@ -828,6 +835,9 @@ fn on_timer(hwnd: HWND, allow_autoclean: bool) {
     if allow_autoclean && sys::is_elevated() && !CLEANING.with(|c| c.get()) && should_autoclean(&info) {
         request_clean(hwnd, Source::Auto, None);
     }
+    if allow_autoclean {
+        crate::update::maybe_auto_check(hwnd);
+    }
 
     let percent = info.physical.percent;
     let new_icon = if LAST_PERCENT.with(|l| l.get()) != percent {
@@ -938,6 +948,7 @@ fn on_tray(hwnd: HWND, lparam: LPARAM) {
             }
         }
         NIN_KEYSELECT => show(hwnd),
+        NIN_BALLOONUSERCLICK => crate::update::on_balloon_click(hwnd),
         WM_CONTEXTMENU => show_tray_menu(hwnd),
         _ => {}
     }
@@ -1009,6 +1020,11 @@ fn on_command(hwnd: HWND, id: i32) {
             set_skipuac(hwnd, !config::get_bool("SkipUacEnabled", false));
             settings::reload_page_values();
         }
+        IDM_REQUIREADMIN => {
+            set_require_admin(hwnd, !config::get_bool("RequireAdmin", true));
+            settings::reload_page_values();
+        }
+        IDM_CHECKUPDATES => crate::update::check(hwnd, false),
         IDM_OPENCONFIG => {
             let dir = config::dir();
             let _ = std::fs::create_dir_all(&dir);
@@ -1032,6 +1048,26 @@ fn on_command(hwnd: HWND, id: i32) {
         IDM_WEBSITE => sys::shell_open(sys::REPO_URL),
         IDM_ABOUT => about(hwnd),
         _ => {}
+    }
+}
+
+/// "Require administrator rights": when switched on in a non-elevated
+/// session, restarts elevated right away.
+pub fn set_require_admin(owner: HWND, enable: bool) {
+    config::set_bool("RequireAdmin", enable);
+    update_menu_checks();
+    if enable && !sys::is_elevated() {
+        let main = main_hwnd();
+        if restart_elevated(main) {
+            unsafe { DestroyWindow(main) };
+        } else {
+            win::message_box(
+                owner,
+                "Administrator rights were not granted. Mem Reduct will ask for them the next time it starts.",
+                APP_NAME,
+                MB_OK | MB_ICONINFORMATION,
+            );
+        }
     }
 }
 
@@ -1112,6 +1148,7 @@ fn init(hwnd: HWND) {
 
     theme::apply(hwnd);
     add_tray(hwnd);
+    crate::update::notify_if_updated(hwnd);
     init_hotkey();
     unsafe { SetTimer(hwnd, TIMER_ID, 1000, None) };
 }
@@ -1163,6 +1200,14 @@ unsafe extern "system" fn dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_CLEAN_DONE => {
             let result = Box::from_raw(lparam as *mut memory::CleanResult);
             finish_clean(hwnd, Source::from(wparam), *result);
+            0
+        }
+        crate::update::WM_UPDATE_CHECKED => {
+            crate::update::on_checked(hwnd, wparam, lparam);
+            0
+        }
+        crate::update::WM_UPDATE_DOWNLOADED => {
+            crate::update::on_downloaded(hwnd, lparam);
             0
         }
         WM_SIZE => {

@@ -22,6 +22,7 @@ mod settings;
 mod sys;
 mod theme;
 mod tray;
+mod update;
 mod util;
 mod win;
 
@@ -204,6 +205,8 @@ fn run() -> i32 {
         return 0;
     }
 
+    update::cleanup_after_update();
+
     if sys::is_elevated() {
         sys::enable_cleaning_privileges();
         // the task may have been removed outside the app (Task Scheduler)
@@ -219,19 +222,50 @@ fn run() -> i32 {
             args.minimized = true;
             config::remove("SkipUacPendingMinimized");
         }
-    } else if config::get_bool("SkipUacEnabled", false) {
-        // restart elevated through the scheduled task, without a UAC prompt
-        release_instance_mutex();
-        if args.minimized {
-            config::set_bool("SkipUacPendingMinimized", true);
+    } else {
+        if config::get_bool("SkipUacEnabled", false) {
+            // restart elevated through the scheduled task, without a UAC prompt
+            release_instance_mutex();
+            if args.minimized {
+                config::set_bool("SkipUacPendingMinimized", true);
+            }
+            if sys::skipuac_run() {
+                return 0;
+            }
+            config::remove("SkipUacPendingMinimized");
+            if !acquire_instance_mutex() {
+                activate_existing_instance();
+                return 0;
+            }
         }
-        if sys::skipuac_run() {
-            return 0;
-        }
-        config::remove("SkipUacPendingMinimized");
-        if !acquire_instance_mutex() {
-            activate_existing_instance();
-            return 0;
+
+        if config::get_bool("RequireAdmin", true) {
+            // restart elevated through UAC
+            release_instance_mutex();
+            if sys::run_as_admin(std::ptr::null_mut(), if args.minimized { "-minimized" } else { "" }) {
+                return 0;
+            }
+            if !acquire_instance_mutex() {
+                activate_existing_instance();
+                return 0;
+            }
+            // UAC was declined: let the user choose to continue in monitor-only mode
+            let (proceed, dont_ask) = mainwnd::confirm(
+                std::ptr::null_mut(),
+                "Administrator rights were not granted",
+                "Mem Reduct needs administrator rights to clean memory.\n\n\
+                 Continue without them? Memory can still be monitored, and cleaning will ask for \
+                 administrator rights again.\n\n\
+                 \"Do not ask again\" turns off \"Require administrator rights\" \
+                 (Settings \u{2192} General).",
+                true,
+            );
+            if !proceed {
+                return 0;
+            }
+            if dont_ask {
+                config::set_bool("RequireAdmin", false);
+            }
         }
     }
 
