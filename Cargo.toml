@@ -1,0 +1,41 @@
+[package]
+name = "memreduct-rs"
+version = "3.5.2"
+authors = ["Liquify"]
+repository = "https://github.com/SYNLiquify/memreduct-rs"
+homepage = "https://github.com/SYNLiquify/memreduct-rs"
+edition = "2021"
+description = "Lightweight real-time memory monitor and cleaner for Windows (Rust rewrite of Mem Reduct)"
+license = "GPL-3.0-or-later"
+build = "build.rs"
+
+[[bin]]
+name = "memreduct"
+path = "src/main.rs"
+
+[dependencies.windows-sys]
+version = "0.59"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_Controls",
+    "Win32_UI_Controls_Dialogs",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
