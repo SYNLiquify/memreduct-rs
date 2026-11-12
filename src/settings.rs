@@ -58,6 +58,7 @@ const IDC_CHANGEBG: i32 = 623;
 const IDC_ANTIALIAS: i32 = 624;
 const IDC_FONT: i32 = 625;
 const IDC_TRAY_COLORS: i32 = 626;
+const IDC_THEME_COLORS: i32 = 627;
 // Tray icon
 const IDC_WARN_EDIT: i32 = 630;
 const IDC_WARN_UD: i32 = 631;
@@ -141,15 +142,16 @@ fn page_template(page: usize) -> Vec<u32> {
         }
         PAGE_APPEARANCE => {
             heading(&mut t, 0, "Tray icon style", 0);
-            t.checkbox(IDC_TRANSPARENT, "Use transparent background", 6, 12, 240, 12);
-            t.checkbox(IDC_BORDER, "Show border", 6, 25, 240, 12);
-            t.checkbox(IDC_ROUND, "Round corners", 6, 38, 240, 12);
-            t.checkbox(IDC_CHANGEBG, "Change background color (instead of text color) on warning", 6, 51, 240, 12);
-            t.checkbox(IDC_ANTIALIAS, "Use antialiasing", 6, 64, 240, 12);
-            heading(&mut t, 1, "Font and colors (double-click a color to change it)", 82);
-            t.label(IDC_STATIC, "Font:", 6, 95, 60, 12);
-            t.button(IDC_FONT, "", 70, 94, 176, 14);
-            t.listview(IDC_TRAY_COLORS, d::WS_BORDER, 6, 112, 240, 50);
+            t.checkbox(IDC_THEME_COLORS, "Use interface theme colors (accent background)", 6, 12, 240, 12);
+            t.checkbox(IDC_TRANSPARENT, "Use transparent background", 6, 24, 240, 12);
+            t.checkbox(IDC_BORDER, "Show border", 6, 36, 240, 12);
+            t.checkbox(IDC_ROUND, "Round corners", 6, 48, 240, 12);
+            t.checkbox(IDC_CHANGEBG, "Change background color (instead of text color) on warning", 6, 60, 240, 12);
+            t.checkbox(IDC_ANTIALIAS, "Use antialiasing", 6, 72, 240, 12);
+            heading(&mut t, 1, "Font and colors (double-click a color to change it)", 88);
+            t.label(IDC_STATIC, "Font:", 6, 101, 60, 12);
+            t.button(IDC_FONT, "", 70, 100, 176, 14);
+            t.listview(IDC_TRAY_COLORS, d::WS_BORDER, 6, 118, 240, 44);
         }
         PAGE_TRAY => {
             heading(&mut t, 0, "Color indication", 0);
@@ -543,6 +545,7 @@ fn load_page(page: usize, hwnd: HWND) {
             win::set_check(hwnd, IDC_ROUND, config::get_bool("TrayRoundCorners", false));
             win::set_check(hwnd, IDC_CHANGEBG, config::get_bool("TrayChangeBg", true));
             win::set_check(hwnd, IDC_ANTIALIAS, config::get_bool("TrayUseAntialiasing", false));
+            win::set_check(hwnd, IDC_THEME_COLORS, config::get_bool("TrayUseThemeColors", false));
             win::set_item_text(hwnd, IDC_FONT, &FontSpec::load().describe());
             let lv = win::item(hwnd, IDC_TRAY_COLORS);
             for (i, (key, _, default)) in TRAY_COLORS.iter().enumerate() {
@@ -668,8 +671,9 @@ fn on_page_command(page: HWND, id: i32, code: u32) {
             config::set_u32("HotkeyClean", value);
             mainwnd::init_hotkey();
         }
-        IDC_TRANSPARENT | IDC_BORDER | IDC_ROUND | IDC_CHANGEBG | IDC_ANTIALIAS => {
+        IDC_TRANSPARENT | IDC_BORDER | IDC_ROUND | IDC_CHANGEBG | IDC_ANTIALIAS | IDC_THEME_COLORS => {
             let key = match id {
+                IDC_THEME_COLORS => "TrayUseThemeColors",
                 IDC_TRANSPARENT => "TrayUseTransparency",
                 IDC_BORDER => "TrayShowBorder",
                 IDC_ROUND => "TrayRoundCorners",

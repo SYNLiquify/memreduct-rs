@@ -36,7 +36,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use crate::sys::APP_NAME;
 use crate::util::wide;
 
+// Debug builds use their own instance identity so they can run next to an
+// installed release.
+#[cfg(not(debug_assertions))]
 const MUTEX_NAME: &str = "memreduct-rs-single-instance";
+#[cfg(debug_assertions)]
+const MUTEX_NAME: &str = "memreduct-rs-single-instance-debug";
 
 thread_local! {
     static INSTANCE_MUTEX: Cell<HANDLE> = const { Cell::new(std::ptr::null_mut()) };

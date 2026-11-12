@@ -681,17 +681,14 @@ fn menu_font(hwnd: HWND) -> HFONT {
     }
 }
 
-pub fn measure_menu_bar_item(hwnd: HWND, mis: &mut MEASUREITEMSTRUCT, text: &str) {
+fn bold_menu_font(hwnd: HWND) -> HFONT {
     unsafe {
-        let hdc = GetDC(hwnd);
-        let font = menu_font(hwnd);
-        let old = SelectObject(hdc, font);
-        let clean: String = text.replace('&', "");
-        mis.itemWidth = (text_width(hdc, &clean) + scale(hwnd, 12)) as u32;
-        mis.itemHeight = GetSystemMetricsForDpiSafe(hwnd, SM_CYMENU) as u32;
-        SelectObject(hdc, old);
-        DeleteObject(font);
-        ReleaseDC(hwnd, hdc);
+        let dpi = GetDpiForWindow(hwnd).max(96);
+        let mut ncm: NONCLIENTMETRICSW = std::mem::zeroed();
+        ncm.cbSize = std::mem::size_of::<NONCLIENTMETRICSW>() as u32;
+        SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, ncm.cbSize, &mut ncm as *mut _ as *mut _, 0, dpi);
+        ncm.lfMenuFont.lfWeight = FW_BOLD as i32;
+        CreateFontIndirectW(&ncm.lfMenuFont)
     }
 }
 
@@ -700,39 +697,305 @@ fn GetSystemMetricsForDpiSafe(hwnd: HWND, metric: SYSTEM_METRICS_INDEX) -> i32 {
     unsafe { windows_sys::Win32::UI::HiDpi::GetSystemMetricsForDpi(metric, GetDpiForWindow(hwnd).max(96)) }
 }
 
-pub fn draw_menu_bar_item(hwnd: HWND, dis: &DRAWITEMSTRUCT, text: &str) {
-    let p = match palette() {
-        Some(p) => p,
-        None => return,
-    };
+// ---------------------------------------------------------------------------
+// Themed menus (menu bar, tray menu and every popup menu)
+//
+// While a theme is active, every menu item is switched to MFT_OWNERDRAW and
+// carries a pointer to a `MenuItem` with its text and flags. The owner window
+// forwards WM_MEASUREITEM / WM_DRAWITEM / WM_MENUCHAR here.
+// ---------------------------------------------------------------------------
+
+struct MenuItem {
+    text: String,
+    separator: bool,
+    submenu: bool,
+    default: bool,
+    bar: bool,
+}
+
+thread_local! {
+    // Boxed on purpose: menu items keep raw pointers to their MenuItem, so the
+    // items must not move when the Vec grows.
+    #[allow(clippy::vec_box)]
+    static MENU_DATA: RefCell<std::collections::HashMap<isize, Vec<Box<MenuItem>>>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// Makes `menu` (and its submenus) owner-drawn when a theme is active.
+/// Pair with [`destroy_menu`].
+pub fn prepare_menu(menu: HMENU, is_bar: bool) {
+    if palette().is_none() || menu.is_null() {
+        return;
+    }
     unsafe {
-        let hdc = dis.hDC;
-        let active = dis.itemState & (ODS_SELECTED | ODS_HOTLIGHT) != 0;
-        let bg = if active { blend(p.bg, p.text, 0.15) } else { p.bg };
-        fill(hdc, &dis.rcItem, bg);
-        let font = menu_font(hwnd);
-        let old = SelectObject(hdc, font);
-        let mut rc = dis.rcItem;
-        let mut flags = DT_SINGLELINE | DT_VCENTER | DT_CENTER;
-        if dis.itemState & ODS_NOACCEL != 0 {
-            flags |= DT_HIDEPREFIX;
+        let count = GetMenuItemCount(menu).max(0) as u32;
+        let mut items = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let mut buf = [0u16; 256];
+            let mut mii: MENUITEMINFOW = std::mem::zeroed();
+            mii.cbSize = std::mem::size_of::<MENUITEMINFOW>() as u32;
+            mii.fMask = MIIM_FTYPE | MIIM_STRING | MIIM_SUBMENU | MIIM_STATE;
+            mii.dwTypeData = buf.as_mut_ptr();
+            mii.cch = buf.len() as u32;
+            if GetMenuItemInfoW(menu, i, 1, &mut mii) == 0 {
+                continue;
+            }
+            if mii.fType & MFT_OWNERDRAW != 0 {
+                continue; // already prepared
+            }
+            if !mii.hSubMenu.is_null() {
+                prepare_menu(mii.hSubMenu, false);
+            }
+            let item = Box::new(MenuItem {
+                text: crate::util::from_wide(&buf),
+                separator: mii.fType & MFT_SEPARATOR != 0,
+                submenu: !mii.hSubMenu.is_null(),
+                default: mii.fState & MFS_DEFAULT != 0,
+                bar: is_bar,
+            });
+            let mut set: MENUITEMINFOW = std::mem::zeroed();
+            set.cbSize = std::mem::size_of::<MENUITEMINFOW>() as u32;
+            set.fMask = MIIM_FTYPE | MIIM_DATA;
+            set.fType = mii.fType | MFT_OWNERDRAW;
+            set.dwItemData = &*item as *const MenuItem as usize;
+            SetMenuItemInfoW(menu, i, 1, &set);
+            items.push(item);
         }
-        let color = if dis.itemState & ODS_INACTIVE != 0 { blend(p.text, p.bg, 0.4) } else { p.text };
-        draw_text(hdc, text, &mut rc, color, flags);
-        SelectObject(hdc, old);
-        DeleteObject(font);
+
+        // paints the gutters and the menu bar strip right of the last item
+        let mut info: MENUINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MENUINFO>() as u32;
+        info.fMask = MIM_BACKGROUND;
+        info.hbrBack = bg_brush();
+        SetMenuInfo(menu, &info);
+
+        MENU_DATA.with(|m| m.borrow_mut().insert(menu as isize, items));
     }
 }
 
-/// Paints the strip of menu bar to the right of the last item.
-pub fn set_menu_bar_background(menu: HMENU) {
+fn release_menu(menu: HMENU) {
     unsafe {
-        let mut mi: MENUINFO = std::mem::zeroed();
-        mi.cbSize = std::mem::size_of::<MENUINFO>() as u32;
-        mi.fMask = MIM_BACKGROUND;
-        mi.hbrBack = bg_brush();
-        SetMenuInfo(menu, &mi);
+        for i in 0..GetMenuItemCount(menu).max(0) {
+            let sub = GetSubMenu(menu, i);
+            if !sub.is_null() {
+                release_menu(sub);
+            }
+        }
     }
+    MENU_DATA.with(|m| m.borrow_mut().remove(&(menu as isize)));
+}
+
+/// Destroys a menu and frees the owner-draw data of it and its submenus.
+pub fn destroy_menu(menu: HMENU) {
+    if menu.is_null() {
+        return;
+    }
+    release_menu(menu);
+    unsafe { DestroyMenu(menu) };
+}
+
+fn split_label(text: &str) -> (&str, &str) {
+    text.split_once('\t').unwrap_or((text, ""))
+}
+
+/// Keyboard mnemonics ("&File") for owner-drawn items (WM_MENUCHAR).
+pub fn menu_char(menu: HMENU, ch: u16) -> Option<isize> {
+    let key = char::from_u32(ch as u32)?.to_lowercase().next()?;
+    MENU_DATA.with(|m| {
+        let m = m.borrow();
+        let items = m.get(&(menu as isize))?;
+        let index = items.iter().position(|it| {
+            let label = split_label(&it.text).0;
+            let mut chars = label.chars();
+            while let Some(c) = chars.next() {
+                if c == '&' {
+                    return chars.next().map(|n| n.to_lowercase().next() == Some(key)).unwrap_or(false);
+                }
+            }
+            false
+        })?;
+        Some(((2 /* MNC_EXECUTE */) << 16 | index) as isize)
+    })
+}
+
+/// WM_MEASUREITEM for menus. Returns false when the item isn't ours.
+pub fn measure_menu_item(hwnd: HWND, mis: &mut MEASUREITEMSTRUCT) -> bool {
+    if mis.CtlType != ODT_MENU || mis.itemData == 0 {
+        return false;
+    }
+    let item = unsafe { &*(mis.itemData as *const MenuItem) };
+    unsafe {
+        if item.separator {
+            mis.itemWidth = 0;
+            mis.itemHeight = scale(hwnd, 9) as u32;
+            return true;
+        }
+        let hdc = GetDC(hwnd);
+        let font = if item.default { bold_menu_font(hwnd) } else { menu_font(hwnd) };
+        let old = SelectObject(hdc, font);
+        let (label, shortcut) = split_label(&item.text);
+        let label_w = text_width(hdc, &label.replace('&', ""));
+        if item.bar {
+            mis.itemWidth = (label_w + scale(hwnd, 12)) as u32;
+            mis.itemHeight = GetSystemMetricsForDpiSafe(hwnd, SM_CYMENU) as u32;
+        } else {
+            let mut w = scale(hwnd, 32) + label_w + scale(hwnd, 24);
+            if !shortcut.is_empty() {
+                w += scale(hwnd, 28) + text_width(hdc, shortcut);
+            }
+            let mut tm: TEXTMETRICW = std::mem::zeroed();
+            GetTextMetricsW(hdc, &mut tm);
+            mis.itemWidth = w as u32;
+            mis.itemHeight = (tm.tmHeight + scale(hwnd, 10)).max(scale(hwnd, 26)) as u32;
+        }
+        SelectObject(hdc, old);
+        DeleteObject(font);
+        ReleaseDC(hwnd, hdc);
+    }
+    true
+}
+
+unsafe fn chevron(hdc: HDC, cx: i32, cy: i32, size: i32, color: u32, down: bool, width: i32) {
+    let pts = if down {
+        [POINT { x: cx - size, y: cy - size / 2 }, POINT { x: cx, y: cy + size / 2 }, POINT { x: cx + size, y: cy - size / 2 }]
+    } else {
+        [POINT { x: cx - size / 2, y: cy - size }, POINT { x: cx + size / 2, y: cy }, POINT { x: cx - size / 2, y: cy + size }]
+    };
+    let pen = CreatePen(PS_SOLID, width, color);
+    let old = SelectObject(hdc, pen);
+    Polyline(hdc, pts.as_ptr(), 3);
+    SelectObject(hdc, old);
+    DeleteObject(pen);
+}
+
+/// WM_DRAWITEM for menus. Returns false when the item isn't ours.
+pub fn draw_menu_item(hwnd: HWND, dis: &DRAWITEMSTRUCT) -> bool {
+    if dis.CtlType != ODT_MENU || dis.itemData == 0 {
+        return false;
+    }
+    let p = match palette() {
+        Some(p) => p,
+        None => return false,
+    };
+    let item = unsafe { &*(dis.itemData as *const MenuItem) };
+    unsafe {
+        let hdc = dis.hDC;
+        let rc = dis.rcItem;
+        let state = dis.itemState;
+        let disabled = state & (ODS_GRAYED | ODS_DISABLED) != 0;
+        let selected = state & (ODS_SELECTED | ODS_HOTLIGHT) != 0;
+        let (label, shortcut) = split_label(&item.text);
+        let mut flags = DT_SINGLELINE | DT_VCENTER;
+        if state & ODS_NOACCEL != 0 {
+            flags |= DT_HIDEPREFIX;
+        }
+
+        fill(hdc, &rc, p.bg);
+
+        if item.bar {
+            if selected {
+                fill(hdc, &rc, blend(p.bg, p.text, 0.15));
+            }
+            let font = menu_font(hwnd);
+            let old = SelectObject(hdc, font);
+            let mut r = rc;
+            let color = if state & ODS_INACTIVE != 0 { blend(p.text, p.bg, 0.4) } else { p.text };
+            draw_text(hdc, label, &mut r, color, flags | DT_CENTER);
+            SelectObject(hdc, old);
+            DeleteObject(font);
+            return true;
+        }
+
+        if item.separator {
+            let y = (rc.top + rc.bottom) / 2;
+            let line = RECT { left: rc.left + scale(hwnd, 10), top: y, right: rc.right - scale(hwnd, 10), bottom: y + 1 };
+            fill(hdc, &line, blend(p.bg, p.text, 0.2));
+            return true;
+        }
+
+        let fg = if disabled {
+            blend(p.text, p.bg, 0.55)
+        } else if selected {
+            p.accent_text
+        } else {
+            p.text
+        };
+        if selected {
+            let pad_x = scale(hwnd, 4);
+            let hl = RECT { left: rc.left + pad_x, top: rc.top + 1, right: rc.right - pad_x, bottom: rc.bottom - 1 };
+            let color = if disabled { blend(p.bg, p.text, 0.1) } else { p.accent };
+            round_rect(hdc, &hl, scale(hwnd, 6), color, color);
+        }
+
+        let check_w = scale(hwnd, 32);
+        if state & ODS_CHECKED != 0 {
+            let s = scale(hwnd, 12) as f32;
+            let x = (rc.left + (check_w - s as i32) / 2) as f32;
+            let y = ((rc.top + rc.bottom) as f32 - s) / 2.0;
+            let pts = [
+                POINT { x: (x + s * 0.12) as i32, y: (y + s * 0.52) as i32 },
+                POINT { x: (x + s * 0.40) as i32, y: (y + s * 0.80) as i32 },
+                POINT { x: (x + s * 0.92) as i32, y: (y + s * 0.20) as i32 },
+            ];
+            let pen = CreatePen(PS_SOLID, scale(hwnd, 2), if selected && !disabled { p.accent_text } else { heading_color() });
+            let old = SelectObject(hdc, pen);
+            Polyline(hdc, pts.as_ptr(), 3);
+            SelectObject(hdc, old);
+            DeleteObject(pen);
+        }
+
+        let font = if item.default { bold_menu_font(hwnd) } else { menu_font(hwnd) };
+        let old = SelectObject(hdc, font);
+        let arrow_w = scale(hwnd, 24);
+        let mut text_rc = RECT { left: rc.left + check_w, top: rc.top, right: rc.right - arrow_w, bottom: rc.bottom };
+        draw_text(hdc, label, &mut text_rc, fg, flags | DT_LEFT);
+        if !shortcut.is_empty() {
+            let mut sc = text_rc;
+            let sc_color = if disabled { fg } else { blend(fg, p.bg, 0.3) };
+            draw_text(hdc, shortcut, &mut sc, sc_color, DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
+        }
+        SelectObject(hdc, old);
+        DeleteObject(font);
+
+        if item.submenu {
+            let cx = rc.right - arrow_w / 2 - scale(hwnd, 2);
+            chevron(hdc, cx, (rc.top + rc.bottom) / 2, scale(hwnd, 4), fg, false, scale(hwnd, 1).max(1));
+            // keep Windows from painting its own (black) submenu arrow on top
+            ExcludeClipRect(hdc, rc.right - arrow_w, rc.top, rc.right, rc.bottom);
+        }
+    }
+    true
+}
+
+/// Colors for the tray icon when it follows the theme: the palette accent,
+/// or the Windows accent color under "System default".
+pub fn tray_colors() -> (u32, u32) {
+    if let Some(p) = palette() {
+        return (p.accent, p.accent_text);
+    }
+    let accent = windows_accent().unwrap_or(rgb(0x00, 0x67, 0xC0));
+    (accent, crate::util::contrast_text(accent))
+}
+
+fn windows_accent() -> Option<u32> {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    let key = wide("Software\\Microsoft\\Windows\\DWM");
+    let name = wide("AccentColor");
+    let mut value = 0u32;
+    let mut size = 4u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            &mut value as *mut u32 as *mut _,
+            &mut size,
+        )
+    };
+    // stored as 0xAABBGGRR, which is COLORREF layout plus alpha
+    (status == 0).then_some(value & 0x00FF_FFFF)
 }
 
 #[cfg(test)]

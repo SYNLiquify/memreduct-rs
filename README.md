@@ -24,7 +24,8 @@ Release numbers follow the upstream project: `v.3.5.2` of this rewrite correspon
 - **Automatic cleaning** when usage goes above a threshold, or every N minutes.
 - **Global hotkey** (default `Ctrl+F1`).
 - **Tray icon styling**: font, colors, transparency, border, round corners, and warning/danger levels.
-- **Interface themes** (new in the rewrite): System default, Light, Dark, Midnight, Forest, Sunset, or Custom with your own colors for background, text, accent, accent text, lists/inputs and borders. Switch from *View → Theme* or *Settings → Theme*.
+- **Interface themes** (new in the rewrite): System default, Light, Dark, Midnight, Forest, Sunset, or Custom with your own colors for background, text, accent, accent text, lists/inputs and borders. Switch from *View → Theme* or *Settings → Theme*. The theme also covers the tray right-click menu and every other menu.
+- **Themed tray icon** (optional): *Settings → Tray icon style → Use interface theme colors* gives the percentage icon the theme's accent color, or your Windows accent color under "System default". Warning and danger colors still apply.
 - Load on startup, start minimized, always on top, and skipping the UAC prompt through a scheduled task.
 - Portable mode: put a `memreduct.ini` next to `memreduct.exe`.
 

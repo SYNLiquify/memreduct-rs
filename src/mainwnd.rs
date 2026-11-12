@@ -129,7 +129,7 @@ pub fn interval_value() -> u32 {
 pub fn activate_message() -> u32 {
     MSG_ACTIVATE.with(|m| {
         if m.get() == 0 {
-            let name = wide("memreduct-rs-activate");
+            let name = wide(if cfg!(debug_assertions) { "memreduct-rs-activate-debug" } else { "memreduct-rs-activate" });
             m.set(unsafe { RegisterWindowMessageW(name.as_ptr()) });
         }
         m.get()
@@ -137,7 +137,7 @@ pub fn activate_message() -> u32 {
 }
 
 pub fn instance_prop() -> Vec<u16> {
-    wide("memreduct-rs-main")
+    wide(if cfg!(debug_assertions) { "memreduct-rs-main-debug" } else { "memreduct-rs-main" })
 }
 
 // ---------------------------------------------------------------------------
@@ -357,21 +357,15 @@ pub fn build_menu(hwnd: HWND) {
         append(help, MF_STRING, IDM_ABOUT as usize, "&About\tF1");
 
         for (i, sub) in [file, view, settings_menu, help].into_iter().enumerate() {
-            if themed {
-                AppendMenuW(bar, MF_POPUP | MF_OWNERDRAW, sub as usize, i as *const u16);
-            } else {
-                append(bar, MF_POPUP, sub as usize, MENU_TITLES[i]);
-            }
+            append(bar, MF_POPUP, sub as usize, MENU_TITLES[i]);
         }
         if themed {
-            theme::set_menu_bar_background(bar);
+            theme::prepare_menu(bar, true);
         }
 
         let old = GetMenu(hwnd);
         SetMenu(hwnd, bar);
-        if !old.is_null() {
-            DestroyMenu(old);
-        }
+        theme::destroy_menu(old);
         DrawMenuBar(hwnd);
     }
     update_menu_checks();
@@ -477,12 +471,14 @@ fn show_tray_menu(hwnd: HWND) {
         separator(menu);
         append(menu, MF_STRING, IDM_EXIT as usize, "Exit");
 
+        theme::prepare_menu(menu, false);
+
         let mut pt = POINT { x: 0, y: 0 };
         GetCursorPos(&mut pt);
         SetForegroundWindow(hwnd);
         TrackPopupMenuEx(menu, TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_BOTTOMALIGN, pt.x, pt.y, hwnd, std::ptr::null());
         PostMessageW(hwnd, WM_NULL, 0, 0);
-        DestroyMenu(menu);
+        theme::destroy_menu(menu);
     }
 }
 
@@ -496,8 +492,9 @@ fn show_region_menu(hwnd: HWND, button: HWND) {
         }
         let mut rc: RECT = std::mem::zeroed();
         GetWindowRect(button, &mut rc);
+        theme::prepare_menu(menu, false);
         TrackPopupMenuEx(menu, TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom, hwnd, std::ptr::null());
-        DestroyMenu(menu);
+        theme::destroy_menu(menu);
     }
 }
 
@@ -586,6 +583,9 @@ pub fn apply_theme_everywhere() {
     if !hwnd.is_null() {
         build_menu(hwnd);
         theme::apply(hwnd);
+        if config::get_bool("TrayUseThemeColors", false) {
+            refresh_icon();
+        }
     }
     settings::apply_theme();
 }
@@ -1140,24 +1140,12 @@ unsafe extern "system" fn dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             theme::ctl_color(msg, wparam as HDC, lparam as HWND).unwrap_or(0)
         }
         WM_NOTIFY => on_notify(hwnd, lparam),
-        WM_MEASUREITEM => {
-            let mis = &mut *(lparam as *mut MEASUREITEMSTRUCT);
-            if mis.CtlType == ODT_MENU {
-                let title = MENU_TITLES.get(mis.itemData).copied().unwrap_or("");
-                theme::measure_menu_bar_item(hwnd, mis, title);
-                return 1;
-            }
-            0
-        }
-        WM_DRAWITEM => {
-            let dis = &*(lparam as *const DRAWITEMSTRUCT);
-            if dis.CtlType == ODT_MENU {
-                let title = MENU_TITLES.get(dis.itemData).copied().unwrap_or("");
-                theme::draw_menu_bar_item(hwnd, dis, title);
-                return 1;
-            }
-            0
-        }
+        WM_MEASUREITEM => theme::measure_menu_item(hwnd, &mut *(lparam as *mut MEASUREITEMSTRUCT)) as isize,
+        WM_DRAWITEM => theme::draw_menu_item(hwnd, &*(lparam as *const DRAWITEMSTRUCT)) as isize,
+        WM_MENUCHAR => match theme::menu_char(lparam as HMENU, win::loword(wparam)) {
+            Some(r) => win::dlg_result(hwnd, r),
+            None => 0,
+        },
         WM_COMMAND => {
             on_command(hwnd, win::loword(wparam) as i32);
             0
@@ -1186,9 +1174,13 @@ unsafe extern "system" fn dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             refresh_icon();
             0 // let the dialog manager rescale the layout
         }
-        WM_SETTINGCHANGE | WM_SYSCOLORCHANGE => {
+        WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_DWMCOLORIZATIONCOLORCHANGED => {
             if theme::palette().is_none() {
                 theme::apply(hwnd);
+                // the Windows accent color may have changed
+                if config::get_bool("TrayUseThemeColors", false) {
+                    refresh_icon();
+                }
             }
             0
         }

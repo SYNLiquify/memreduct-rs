@@ -99,6 +99,11 @@ impl Style {
             border: config::get_bool("TrayShowBorder", false),
             round: config::get_bool("TrayRoundCorners", false),
         };
+        if config::get_bool("TrayUseThemeColors", false) {
+            let (bg, text) = crate::theme::tray_colors();
+            s.bg = bg;
+            s.text = text;
+        }
         let danger = percent >= danger_level();
         if danger || percent >= warning_level() {
             let level_color = if danger { danger_color() } else { warning_color() };
